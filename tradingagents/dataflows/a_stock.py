@@ -33,6 +33,32 @@ from .utils import safe_ticker_component
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Proxy bypass for Chinese financial data sources (akshare/eastmoney/iwencai)
+# These domains must bypass the system proxy to connect properly.
+# ---------------------------------------------------------------------------
+_NO_PROXY_LIST = [
+    "push2.eastmoney.com", "push2his.eastmoney.com",
+    "search-api-web.eastmoney.com", "so.eastmoney.com",
+    "82.push2.eastmoney.com", "61.129.128.92", "218.92.30.84",
+    "api.akshare.com", "akshare.com",
+    "api.iwencai.com", "openapi.iwencai.com",
+    "qt.gtimg.cn", "smartbox.gtimg.cn",
+    "sinajs.cn", "hq.sinajs.cn",
+    "tonghuashun.cn", "eq.10jqka.com.cn",
+]
+_current_no_proxy = os.environ.get("NO_PROXY", os.environ.get("no_proxy", ""))
+_new_no_proxy = ",".join(
+    filter(None, [
+        _current_no_proxy,
+        *[d for d in _NO_PROXY_LIST if d not in _current_no_proxy]
+    ])
+)
+os.environ["NO_PROXY"] = _new_no_proxy
+os.environ["no_proxy"] = _new_no_proxy
+# Also set urllib to bypass proxy for these hosts
+urllib.request.proxyhandler = None  # reset cached handler
+
 # CJK character detection — used by _normalize_ticker to catch LLM passing
 # Chinese stock names instead of 6-digit codes (e.g. "立讯精密" → "002475").
 _CJK_RE = _re.compile(r"[\u4e00-\u9fff]")
@@ -214,12 +240,18 @@ _mootdx_client = None
 
 
 def _get_mootdx_client():
-    """Lazy-init mootdx Quotes client (TCP connection, reusable)."""
+    """Lazy-init mootdx Quotes client (TCP connection, reusable).
+
+    Uses an explicitly verified server IP to avoid BESTIP lookup failures
+    that cause 'not enough values to unpack (expected 2, got 0)' errors.
+    """
     global _mootdx_client
     if _mootdx_client is None:
-        from mootdx.quotes import Quotes
+        from mootdx.quotes import StdQuotes
 
-        _mootdx_client = Quotes.factory(market="std")
+        # Explicit server IP — 110.41.147.114:7709 (深圳双线主站1)
+        # verified reachable on 2026-05-14; failover to first available in SERVER list
+        _mootdx_client = StdQuotes(server=("110.41.147.114", 7709))
     return _mootdx_client
 
 
