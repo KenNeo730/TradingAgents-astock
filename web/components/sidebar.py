@@ -22,7 +22,7 @@ _COMMON_STOCKS = {
     "宏昌电子": "603002", "五粮液": "000858", "隆基绿能": "601012",
     "美的集团": "000333", "格力电器": "000651", "中国中免": "601888",
     "海天味业": "603288", "药明康德": "603259", "紫金矿业": "601899",
-    "长江电力": "600900", "中国神华": "601088", "比亚迪": "002594",
+    "长江电力": "600900", "中国神华": "601088",
     "迈瑞医疗": "300760", "海康威视": "002415", "万华化学": "600309",
     "恒瑞医药": "600276", "伊利股份": "600887", "泸州老窖": "000568",
     "山西汾酒": "600809", "片仔癀": "600436", "云南白药": "000538",
@@ -33,52 +33,10 @@ _COMMON_STOCKS = {
 _CJK_RE = re.compile(r"[\u4e00-\u9fff]")
 
 
-def _resolve_ticker(raw: str) -> tuple[str, str | None]:
-    """Return (ticker_code, warning_msg).
-
-    - Pure 6-digit or alphanumeric → pass through.
-    - Contains CJK characters → try local map, then Tencent API.
-    - Unresolvable → return raw with error message.
-    """
-    s = raw.strip()
-    if not s:
-        return s, None
-
-    # Already a valid ticker (6-digit code, or code with exchange suffix)
-    if re.fullmatch(r"[A-Za-z0-9._\-\^]+", s):
-        return s, None
-
-    # Contains Chinese → resolve
-    if _CJK_RE.search(s):
-        # 1) Local lookup
-        if s in _COMMON_STOCKS:
-            code = _COMMON_STOCKS[s]
-            return code, f"✅ 「{s}」→ {code}"
-
-        # 2) Tencent Finance API search
-        try:
-            code = _search_tencent(s)
-            if code:
-                return code, f"✅ 「{s}」→ {code}"
-        except Exception:
-            pass
-
-        return s, f"❌ 未找到「{s}」对应的股票代码，请直接输入6位代码（如 002475）"
-
-    # Other weird characters
-    return s, f"❌ 输入格式有误，请输入6位A股代码（如 300750）或股票中文名（如 立讯精密）"
-
-
 def _decode_tencent_name(raw_name: str) -> str:
-    """Decode a Tencent API name field that may contain Unicode escapes.
-
-    The API returns names like ``\\u7acb\\u8baf\\u7cbe\\u5bc6`` (literal
-    backslash-u sequences).  ``codecs.decode(..., 'unicode_escape')`` converts
-    these into real CJK characters.
-    """
+    """Decode a Tencent API name field that may contain Unicode escapes."""
     if not raw_name:
         return ""
-    # Fast path: already real CJK characters (no backslash-u escapes)
     if _CJK_RE.search(raw_name):
         return raw_name
     try:
@@ -94,26 +52,6 @@ def _search_tencent(name: str) -> str | None:
     req.add_header("User-Agent", "Mozilla/5.0")
     resp = urllib.request.urlopen(req, timeout=5)
     raw = resp.read().decode("gbk")
-    # Response format: v_hint="sz~002475~\u7acb\u8baf\u7cbe\u5bc6~lxjm~GP-A"
-    # The ~ delimiter splits fields: exchange~code~name~pinyin~type
-    for line in raw.strip().split(";"):
-        if "~" not in line:
-            continue
-        # Extract content between first pair of double quotes
-        start = line.find('"')
-        end = line.rfind('"')
-        if start == -1 or end <= start:
-            continue
-        content = line[start + 1 : end]
-        parts = content.split("~")
-        if len(parts) < 2:
-            continue
-        code = parts[1] if len(parts) > 1 else ""
-        # Decode Unicode-escaped name field for comparison
-        decoded_name = _decode_tencent_name(parts[2]) if len(parts) > 2 else ""
-        if decoded_name == name or (len(parts) > 2 and parts[2] == name):
-            return code
-    # Fallback: return first 6-digit code if only one result
     for line in raw.strip().split(";"):
         if "~" not in line:
             continue
@@ -128,9 +66,54 @@ def _search_tencent(name: str) -> str | None:
     return None
 
 
+def _resolve_ticker(raw: str) -> tuple[str, str | None]:
+    """Return (ticker_code, warning_msg).
+
+    - Pure 6-digit or alphanumeric → pass through.
+    - Contains CJK characters → try local map, then Tencent API.
+    - Unresolvable → return raw with error message.
+    """
+    s = raw.strip()
+    if not s:
+        return s, None
+
+    if re.fullmatch(r"[A-Za-z0-9._\-^]+", s):
+        return s, None
+
+    if _CJK_RE.search(s):
+        if s in _COMMON_STOCKS:
+            code = _COMMON_STOCKS[s]
+            return code, f"✅ 「{s}」→ {code}"
+
+        try:
+            code = _search_tencent(s)
+            if code:
+                return code, f"✅ 「{s}」→ {code}"
+        except Exception:
+            pass
+
+        return s, f"❌ 未找到「{s}」对应的股票代码，请直接输入6位代码（如 002475）"
+
+    return s, f"❌ 输入格式有误，请输入6位A股代码（如 300750）或股票中文名（如 立讯精密）"
+
+
+def _resolve_user_input(raw: str) -> tuple[str, str | None]:
+    """Resolve raw user input to (ticker_code, error_msg).
+
+    Accepts 6-digit codes or Chinese stock names (e.g. '宝光股份').
+    Returns (code, None) on success or ("", error_msg) on failure.
+    """
+    from tradingagents.dataflows.a_stock import resolve_ticker
+
+    try:
+        code = resolve_ticker(raw)
+        return code, None
+    except ValueError as e:
+        return "", str(e)
+
+
 def render_sidebar() -> None:
     """Render the sidebar with input controls and history."""
-
     st.markdown(
         """
         <div style="text-align:center; margin-bottom:1.5rem;">
@@ -162,7 +145,7 @@ def render_sidebar() -> None:
         key="input_date",
     )
 
-    # Resolve ticker (Chinese name → code)
+    # Resolve ticker (Chinese name → code) using both local and upstream logic
     ticker, ticker_msg = _resolve_ticker(ticker_raw or "")
     if ticker_msg:
         if ticker_msg.startswith("✅"):
@@ -173,7 +156,6 @@ def render_sidebar() -> None:
     tracker = st.session_state.get("tracker")
     is_busy = tracker is not None and tracker.is_running
 
-    # Disable button if ticker is invalid (contains CJK and unresolved)
     ticker_invalid = bool(_CJK_RE.search(ticker)) if ticker else False
 
     if st.button(
@@ -182,11 +164,17 @@ def render_sidebar() -> None:
         disabled=is_busy or not ticker or ticker_invalid,
         type="primary",
     ):
-        st.session_state["start_analysis"] = {
-            "ticker": ticker,
-            "trade_date": trade_date.strftime("%Y-%m-%d"),
-        }
-        st.session_state["viewing_history"] = None
+        resolved_code, err = _resolve_user_input(ticker_raw or "")
+        if err:
+            st.error(f"❌ {err}")
+        else:
+            if resolved_code != (ticker_raw or "").strip():
+                st.success(f"✅ {(ticker_raw or '').strip()} → {resolved_code}")
+            st.session_state["start_analysis"] = {
+                "ticker": resolved_code,
+                "trade_date": trade_date.strftime("%Y-%m-%d"),
+            }
+            st.session_state["viewing_history"] = None
 
     st.markdown("---")
     st.markdown("#### 历史记录")
