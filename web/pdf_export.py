@@ -12,6 +12,23 @@ from typing import Any
 from fpdf import FPDF
 
 
+def _strip_non_bmp(text: str) -> str:
+    """Remove characters that SimHei/TTF cannot render.
+
+    SimHei only covers CJK Unified Ideographs + basic Latin.
+    Strip: emojis (U+1Fxxx beyond BMP), dingbats U+2700–U+27BF
+    (including ❌ ✅ ⚠️ ❔ ✗ etc.), variation selectors U+FE00–U+FE0F.
+    Keep: CJK, Latin, numbers, punctuation.
+    """
+    return "".join(
+        c
+        for c in text
+        if ord(c) <= 0xFFFF
+        and not (0x2700 <= ord(c) <= 0x27BF)  # dingbats / emoji in BMP
+        and not (0xFE00 <= ord(c) <= 0xFE0F)  # variation selectors
+    )
+
+
 # Font search paths: macOS → Linux → Windows → bundled fallback
 _FONT_CANDIDATES = [
     # macOS
@@ -141,7 +158,7 @@ class _ReportPDF(FPDF):
     def header(self) -> None:
         self._use_font("", 8)
         self.set_text_color(150, 150, 150)
-        self.cell(0, 6, f"A股多Agent投研分析  |  {self.ticker}  |  {self.trade_date}", align="C")
+        self.cell(0, 6, _strip_non_bmp(f"A股多Agent投研分析  |  {self.ticker}  |  {self.trade_date}"), align="C")
         self.ln(8)
         self.set_draw_color(60, 60, 60)
         self.line(10, self.get_y(), self.w - 10, self.get_y())
@@ -159,7 +176,7 @@ class _ReportPDF(FPDF):
 
         self._use_font("B", 24)
         self.set_text_color(255, 90, 31)
-        self.cell(0, 12, "A股多Agent投研分析报告", align="C")
+        self.cell(0, 12, _strip_non_bmp("A股多Agent投研分析报告"), align="C")
         self.ln(20)
 
         self._use_font("B", 36)
@@ -177,7 +194,7 @@ class _ReportPDF(FPDF):
         r, g, b = _signal_color(self.signal)
         self._use_font("B", 40)
         self.set_text_color(r, g, b)
-        self.cell(0, 20, self.signal.upper(), align="C")
+        self.cell(0, 20, _strip_non_bmp(self.signal.upper()), align="C")
         self.ln(20)
 
         self._use_font("", 9)
@@ -194,12 +211,12 @@ class _ReportPDF(FPDF):
         self.add_page()
         self._use_font("B", 16)
         self.set_text_color(255, 90, 31)
-        self.cell(0, 10, title)
+        self.cell(0, 10, _strip_non_bmp(title))
         self.ln(12)
 
         self._use_font("", 10)
         self.set_text_color(40, 40, 40)
-        cleaned = _strip_think(content)
+        cleaned = _strip_think(_strip_non_bmp(content))
         self.multi_cell(0, 5.5, cleaned)
 
 
