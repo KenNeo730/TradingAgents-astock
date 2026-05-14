@@ -20,9 +20,67 @@ import urllib.request
 
 import pandas as pd
 
+import re as _re
+
 from .utils import safe_ticker_component
 
 logger = logging.getLogger(__name__)
+
+# CJK character detection — used by _normalize_ticker to catch LLM passing
+# Chinese stock names instead of 6-digit codes (e.g. "立讯精密" → "002475").
+_CJK_RE = _re.compile(r"[\u4e00-\u9fff]")
+
+# Small local map for the most common stocks.  When a CJK ticker reaches
+# _normalize_ticker we try this map first (zero-latency), then fall back to
+# the Tencent Finance smartbox API.
+_LOCAL_NAME_MAP = {
+    "贵州茅台": "600519", "中国平安": "601318", "招商银行": "600036",
+    "宁德时代": "300750", "比亚迪": "002594", "立讯精密": "002475",
+    "宏昌电子": "603002", "五粮液": "000858", "隆基绿能": "601012",
+    "美的集团": "000333", "格力电器": "000651", "中国中免": "601888",
+    "海天味业": "603288", "药明康德": "603259", "紫金矿业": "601899",
+    "长江电力": "600900", "中国神华": "601088",
+    "迈瑞医疗": "300760", "海康威视": "002415", "万华化学": "600309",
+    "恒瑞医药": "600276", "伊利股份": "600887", "泸州老窖": "000568",
+    "山西汾酒": "600809", "片仔癀": "600436", "云南白药": "000538",
+    "中芯国际": "688981", "科大讯飞": "002230", "三一重工": "600031",
+}
+
+
+def _resolve_cjk_ticker(name: str) -> str | None:
+    """Try to convert a Chinese stock name to its 6-digit code.
+
+    1) Local map lookup (instant).
+    2) Tencent Finance smartbox API (network).
+    Returns the 6-digit code, or None if unresolvable.
+    """
+    name = name.strip()
+    # 1) Local map
+    if name in _LOCAL_NAME_MAP:
+        return _LOCAL_NAME_MAP[name]
+
+    # 2) Tencent smartbox API
+    import codecs
+    try:
+        url = f"https://smartbox.gtimg.cn/s3/?q={urllib.request.quote(name)}&t=all"
+        req = urllib.request.Request(url)
+        req.add_header("User-Agent", "Mozilla/5.0")
+        resp = urllib.request.urlopen(req, timeout=5)
+        raw = resp.read().decode("gbk")
+        for line in raw.strip().split(";"):
+            if "~" not in line:
+                continue
+            start = line.find('"')
+            end = line.rfind('"')
+            if start == -1 or end <= start:
+                continue
+            content = line[start + 1 : end]
+            parts = content.split("~")
+            if len(parts) >= 2 and parts[1].isdigit() and len(parts[1]) == 6:
+                return parts[1]
+    except Exception:
+        pass
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -42,8 +100,21 @@ def _normalize_ticker(symbol: str) -> str:
     """Strip exchange prefix/suffix, return pure 6-digit code.
 
     Handles: '688017', 'SH688017', '688017.SH', 'sh688017'
+    Also handles Chinese stock names (e.g. '立讯精密' → '002475') that LLM
+    agents may pass as ticker arguments instead of the numeric code.
     """
-    s = symbol.strip().upper()
+    s = symbol.strip()
+
+    # ── CJK fast-path: LLM passed a Chinese name instead of a code ──
+    if _CJK_RE.search(s):
+        code = _resolve_cjk_ticker(s)
+        if code:
+            logger.info("Resolved CJK ticker '%s' → '%s'", s, code)
+            return safe_ticker_component(code)
+        # Unresolvable — let safe_ticker_component produce a clear error
+        logger.warning("Cannot resolve CJK ticker: '%s'", s)
+
+    s = s.upper()
     # Remove .SH / .SZ / .BJ suffix
     for suffix in (".SH", ".SZ", ".BJ"):
         if s.endswith(suffix):
@@ -1378,7 +1449,7 @@ def get_dragon_tiger_board(
     """
     import akshare as ak
 
-    code = safe_ticker_component(ticker)
+    code = _normalize_ticker(ticker)
     end_dt = datetime.strptime(trade_date, "%Y-%m-%d")
     start_dt = end_dt - pd.Timedelta(days=look_back_days)
     start_date = start_dt.strftime("%Y%m%d")
@@ -1469,7 +1540,7 @@ def get_lockup_expiry(
     """
     import akshare as ak
 
-    code = safe_ticker_component(ticker)
+    code = _normalize_ticker(ticker)
     lines = [f"# 限售解禁日历 | {code} | {trade_date}"]
 
     try:
@@ -1544,7 +1615,7 @@ def get_industry_comparison(
     """
     import akshare as ak
 
-    code = safe_ticker_component(ticker)
+    code = _normalize_ticker(ticker)
     lines = [f"# 行业横向对比 | {code} | {trade_date}"]
 
     try:

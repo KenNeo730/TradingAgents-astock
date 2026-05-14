@@ -217,3 +217,9 @@ __marimo__/
 
 # Cache
 **/data_cache/
+**/.workbuddy/
+
+# Windows
+nul
+Thumbs.db
+ehthumbs.db

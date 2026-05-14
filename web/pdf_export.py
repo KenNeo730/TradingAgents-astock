@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import re
+import urllib.request
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -10,20 +12,73 @@ from typing import Any
 from fpdf import FPDF
 
 
+# Font search paths: macOS → Linux → Windows → bundled fallback
 _FONT_CANDIDATES = [
+    # macOS
     "/System/Library/Fonts/PingFang.ttc",
     "/System/Library/Fonts/STHeiti Light.ttc",
+    # Linux
     "/usr/share/fonts/truetype/noto/NotoSansSC-Regular.ttf",
     "/usr/share/fonts/noto-cjk/NotoSansCJKsc-Regular.otf",
     "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    # Windows (Chinese fonts — prefer .ttf over .ttc for fpdf2 compatibility)
+    r"C:\Windows\Fonts\simhei.ttf",       # SimHei (bold, TTF)
+    r"C:\Windows\Fonts\simkai.ttf",       # KaiTi  (TTF)
+    r"C:\Windows\Fonts\simfang.ttf",      # FangSong (TTF)
+    r"C:\Windows\Fonts\msyh.ttc",        # Microsoft YaHei (TTC — works but warns)
+    r"C:\Windows\Fonts\simsun.ttc",        # SimSun (TTC)
+    r"C:\Windows\Fonts\msjh.ttc",          # Microsoft JhengHei (TTC)
 ]
+
+# Bundled font cache directory (inside the project)
+_FONT_CACHE_DIR = Path(__file__).resolve().parent / ".fonts"
+
+
+def _ensure_noto_font() -> str | None:
+    """Download NotoSansSC-Regular.otf to cache dir if not already present.
+
+    Returns the local file path, or None on failure.
+    """
+    _FONT_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    # Use .otf extension to match the actual file format
+    font_path = _FONT_CACHE_DIR / "NotoSansSC-Regular.otf"
+    if font_path.exists():
+        return str(font_path)
+
+    # Aliyun OSS mirror — fast in China; falls back to GitHub if blocked
+    urls = [
+        "https://noto-cjk-sequence.oss-cn-hangzhou.aliyuncs.com/NotoSansSC-Regular.otf",
+        "https://github.com/googlefonts/noto-cjk/raw/main/Sans/OTF/SimplifiedChinese/NotoSansSC-Regular.otf",
+    ]
+    for url in urls:
+        try:
+            req = urllib.request.Request(
+                url,
+                headers={"User-Agent": "Mozilla/5.0 (PDF export charset fix)"},
+            )
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                font_path.write_bytes(resp.read())
+            size_kb = font_path.stat().st_size // 1024
+            if size_kb < 500:
+                # File too small — likely an error page, not a real font
+                font_path.unlink(missing_ok=True)
+                print(f"[pdf_export] Downloaded file too small ({size_kb} KB), discarding.")
+                continue
+            print(f"[pdf_export] Downloaded NotoSansSC → {font_path} ({size_kb} KB)")
+            return str(font_path)
+        except Exception as exc:
+            print(f"[pdf_export] Font download failed ({url}): {exc}")
+            continue
+    return None
 
 
 def _find_cjk_font() -> str | None:
+    """Return the first available CJK font path, downloading a fallback if none found."""
     for path in _FONT_CANDIDATES:
         if Path(path).exists():
             return path
-    return None
+    # No system font found – try downloading NotoSansSC as fallback
+    return _ensure_noto_font()
 
 
 def _strip_think(text: str) -> str:
@@ -57,12 +112,25 @@ class _ReportPDF(FPDF):
         self.trade_date = trade_date
         self.signal = signal
         self._has_cjk = False
+        self._cjk_font_path: str | None = None
 
         font_path = _find_cjk_font()
         if font_path:
-            self.add_font("CJK", "", font_path, uni=True)
-            self.add_font("CJK", "B", font_path, uni=True)
-            self._has_cjk = True
+            try:
+                # fpdf2: uni=True is default for TTF/OTF, param deprecated since 2.5.1
+                self.add_font("CJK", "", font_path)
+                # Bold: register separately; fpdf2 synthesizes bold if no dedicated bold file
+                try:
+                    self.add_font("CJK", "B", font_path)
+                except Exception:
+                    # Some .ttc files fail on bold registration; fall back to regular for bold
+                    pass
+                self._has_cjk = True
+                self._cjk_font_path = font_path
+                print(f"[pdf_export] CJK font loaded: {font_path}")
+            except Exception as exc:
+                print(f"[pdf_export] WARNING: failed to load CJK font {font_path}: {exc}")
+                self._has_cjk = False
 
     def _use_font(self, style: str = "", size: int = 10) -> None:
         if self._has_cjk:

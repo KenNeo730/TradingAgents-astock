@@ -48,8 +48,10 @@ def build_instrument_context(ticker: str) -> str:
     """Describe the exact instrument so agents preserve exchange-qualified tickers."""
     return (
         f"The instrument to analyze is `{ticker}`. "
-        "Use this exact ticker in every tool call, report, and recommendation, "
-        "preserving any exchange suffix (e.g. `.TO`, `.L`, `.HK`, `.T`)."
+        "CRITICAL: When calling any tool, you MUST pass the exact ticker value "
+        f"`{ticker}` as the ticker argument — NEVER substitute the company's Chinese name "
+        "(e.g. never pass '立讯精密' when the ticker is '002475'). "
+        "Always use the numeric ticker code in tool calls, reports, and recommendations."
     )
 
 def create_msg_delete():
